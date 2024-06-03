@@ -3,15 +3,17 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import OneHotEncoder
 
+
 def concatenate_strings(row, params_list):
     filtered_strings = [str(row[col]) for col in params_list if pd.notnull(row[col])]
     return '_'.join(filtered_strings)
 
+
 def get_stock_price(symbol, date, price_dict, stock):
     if price_dict.get(symbol) == None:
         price_dict[symbol] = {}
-        
-    if price_dict[symbol].get(date) == None:    
+
+    if price_dict[symbol].get(date) == None:
         history = stock.history(start=date)
         if not history.empty:
             price = history['Close'].values[0]
@@ -21,10 +23,10 @@ def get_stock_price(symbol, date, price_dict, stock):
             price = stock.history(period="1d")['Close'].values[0]
             price_dict[symbol][date] = round(price, 2)
             return round(price, 2)
-    else: 
+    else:
         return round(price_dict[symbol][date], 2)
-        
-        
+
+
 def combine_dfs(ticker_list, price_dict):
     ticker_df_list = []
     for ticker in ticker_list:
@@ -32,11 +34,12 @@ def combine_dfs(ticker_list, price_dict):
         df = ticker_option(ticker, price_dict)
         if len(df) > 0:
             ticker_df_list.append(df)
+        else:
+            print(f"No options found for {ticker}")
 
     df = pd.concat(ticker_df_list).sort_values(by='lastTradeDate').reset_index(drop=True)
-    # Binary and Categorical
     return df
-    
+
 
 def ticker_option(ticker, price_dict):
     stock = yf.Ticker(ticker)
@@ -65,14 +68,16 @@ def ticker_option(ticker, price_dict):
             puts['days_to_exp'] = round((puts['exp'] - puts['lastTradeDate']).dt.total_seconds() / (24 * 3600), 2)
             # concat and store to list
         option_df_list.append(pd.concat([calls, puts]))
-    
+
     df = pd.concat(option_df_list).reset_index(drop=True)
     df['lastTradeDate'] = df['lastTradeDate'].astype(str).str[:10]
     df['stockPrice'] = df.apply(lambda row: get_stock_price(ticker, row['lastTradeDate'], price_dict, stock), axis=1)
     df['option_ticker'] = ticker
     return df
 
+
 def prepare_ml_dataset(df):
+    # Binary and Categorical
     df['inTheMoney'] = df['inTheMoney'].astype(int)
     cat_cols = [
         'type',
