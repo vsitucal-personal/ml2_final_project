@@ -1,8 +1,151 @@
 import yfinance as yf
 import pandas as pd
-import numpy as np
 from sklearn.preprocessing import OneHotEncoder
+import matplotlib.pyplot as plt
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.model_selection import GridSearchCV
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import make_scorer, r2_score, mean_absolute_error, mean_squared_error
+from sklearn.model_selection import train_test_split
+import shap
+from IPython.display import display
+import warnings
 
+warnings.filterwarnings("ignore")
+
+
+def train_model(df):
+    # train test split
+    X, y = df.iloc[:, :-1], df.iloc[:, -1:].to_numpy().ravel()
+    X_trainval, X_test, y_trainval, y_test = train_test_split(
+        X, y, random_state=1337, test_size=0.25
+    )
+
+    # Gridsearch CV
+    max_depth_range = [2, 3, 4]
+    n_estimators_range = [200, 250]
+    steps = [
+        ('scaler', StandardScaler()),
+        ('clf', None),
+    ]
+    pipe = Pipeline(steps)
+    param_grid = [
+        {
+            'clf': [LinearRegression()],
+        },
+        {
+            'clf': [DecisionTreeRegressor()],
+            'clf__max_depth': max_depth_range
+        },
+        {
+            'clf': [
+                RandomForestRegressor(),
+                GradientBoostingRegressor(),
+            ],
+            'clf__max_depth': max_depth_range,
+            'clf__n_estimators': n_estimators_range,
+        }
+    ]
+    cv = 5
+    scoring = make_scorer(r2_score)
+    grid_search = GridSearchCV(
+        pipe, param_grid, scoring=scoring,
+        cv=cv, n_jobs=-1, return_train_score=True
+    )
+    grid_search.fit(X_trainval, y_trainval)
+
+    print("bests:")
+    print(grid_search.best_params_)
+    print(grid_search.best_score_)
+
+    cv_results = pd.DataFrame(grid_search.__dict__['cv_results_'])
+    params = [i for i in cv_results.columns if "param_clf" in i]
+    cv_results['idn'] = cv_results.apply(lambda row: concatenate_strings(row, params), axis=1)
+
+    display(
+        cv_results[['idn', 'params', 'mean_test_score']].sort_values(by=["mean_test_score"],
+                                                                     ascending=False).reset_index(drop=True)
+    )
+    display(
+        cv_results[(cv_results['params'] == grid_search.best_params_)][
+            ['idn', 'params', 'mean_test_score']].reset_index(drop=True)
+    )
+
+    best_estimator = grid_search.best_estimator_
+    best_estimator.fit(X_trainval, y_trainval)
+
+    holdout_preds = best_estimator.predict(X_test)
+    print("model performance:")
+    print(r2_score(y_test, holdout_preds))
+    print(mean_absolute_error(y_test, holdout_preds))
+    print(mean_squared_error(y_test, holdout_preds))
+
+    display(
+        pd.DataFrame({'Predict': holdout_preds, 'Actual': y_test})
+    )
+
+    pipeline = Pipeline([
+        ('scaler', StandardScaler()),
+        ("GradientBoostingClassifier", GradientBoostingRegressor(max_depth=4, n_estimators=200))
+    ])
+    pipeline.fit(X_trainval, y_trainval)
+    holdout_preds = pipeline.predict(X_test)
+    # print(r2_score(y_test, holdout_preds))
+    # print(mean_absolute_error(y_test, holdout_preds))
+    # print(mean_squared_error(y_test, holdout_preds))
+    bm = pipeline.named_steps['GradientBoostingClassifier']
+    bm.fit(X_trainval, y_trainval)
+
+    shap_explainer = shap.Explainer(
+        pipeline.named_steps['GradientBoostingClassifier'], X_trainval, feature_names=X.columns
+    )
+    shap_values = shap_explainer(
+        X_test,
+        check_additivity=False
+    )
+
+    print("shap summary plots")
+    shap.summary_plot(shap_values, X_test, feature_names=X.columns)
+    shap.summary_plot(shap_values, plot_type='bar', feature_names=X.columns)
+
+    shap_explanation = shap.Explanation(shap_values.values[:, :],
+                                        shap_values.base_values[0],
+                                        shap_values.data,
+                                        feature_names=X.columns)
+
+    print("shap values vs. feature values")
+    for i in X.columns:
+        shap.plots.scatter(shap_explanation[:, i])
+
+    return X_test, y_test, shap_values, X, shap_explainer, bm
+
+
+def view_shap_value_for_instance(X_test, y_test, shap_values, X, shap_explainer, bm, instance_index):
+    # Choose an instance to explain (e.g., the first instance in the test set)
+    display(X_test.iloc[[instance_index]])
+    shap_value_instance = shap_values[instance_index]
+    instance_data = X_test.iloc[instance_index]
+
+    # Create the SHAP waterfall plot for the chosen instance
+    ax = shap.waterfall_plot(shap.Explanation(values=shap_value_instance,
+                                              base_values=shap_explainer.expected_value,
+                                              data=instance_data,
+                                              feature_names=X.columns), max_display=100, show=False)
+    ax.set_position([1, 1, 1.2, 1])
+    plt.show()
+
+    print('predict')
+    print(bm.predict(X_test.iloc[[instance_index]])[0])
+    print('actual')
+    print(y_test[instance_index])
+
+    # shap.force_plot(shap.Explanation(values=shap_value_instance,
+    #                                  base_values=shap_explainer.expected_value,
+    #                                  data=instance_data,
+    #                                  feature_names=X.columns), matplotlib=True, figsize=(60, 5))
 
 def concatenate_strings(row, params_list):
     filtered_strings = [str(row[col]) for col in params_list if pd.notnull(row[col])]
