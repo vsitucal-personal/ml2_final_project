@@ -13,6 +13,7 @@ from sklearn.model_selection import train_test_split
 import shap
 from IPython.display import display
 import warnings
+import numpy as np
 
 warnings.filterwarnings("ignore")
 
@@ -116,8 +117,26 @@ def train_model(df):
                                         shap_values.data,
                                         feature_names=X.columns)
 
-    print("shap values vs. feature values")
-    for i in X.columns:
+    print("Top 5 features - shap values vs. feature values")
+    feature_names = X.columns
+    rf_resultX = pd.DataFrame(
+        shap_values.values,
+        columns=feature_names
+    )
+    vals = np.abs(rf_resultX.values).mean(0)
+    shap_importance = pd.DataFrame(
+        list(zip(feature_names, vals)),
+        columns=['col_name', 'feature_importance_vals']
+    )
+    shap_importance.sort_values(
+        by=['feature_importance_vals'],
+        ascending=False,
+        inplace=True
+    )
+    top_cols = shap_importance.head(5)['col_name'].to_list()
+
+
+    for i in top_cols:
         shap.plots.scatter(shap_explanation[:, i])
 
     return X_test, y_test, shap_values, X, shap_explainer, bm
