@@ -83,6 +83,7 @@ def train_model(df):
     print(r2_score(y_test, holdout_preds))
     print(mean_absolute_error(y_test, holdout_preds))
     print(mean_squared_error(y_test, holdout_preds))
+    print(np.sqrt(mean_squared_error(y_test, holdout_preds)))
 
     display(
         pd.DataFrame({'Predict': holdout_preds, 'Actual': y_test})
