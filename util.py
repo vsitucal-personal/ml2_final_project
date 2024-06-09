@@ -8,12 +8,16 @@ from sklearn.tree import DecisionTreeRegressor
 from sklearn.model_selection import GridSearchCV
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import make_scorer, r2_score, mean_absolute_error, mean_squared_error
+from sklearn.metrics import (
+    make_scorer, r2_score, mean_absolute_error, mean_squared_error,
+    mean_absolute_percentage_error
+)
 from sklearn.model_selection import train_test_split
 import shap
 from IPython.display import display
 import warnings
 import numpy as np
+import scipy.stats as si
 from itertools import zip_longest
 
 warnings.filterwarnings("ignore")
@@ -52,36 +56,34 @@ def train_model(df, ax_shap_sum=None, ticker=None):
         }
     ]
     cv = 5
-    met_grid= ['r2', 'neg_mean_absolute_error', 'neg_mean_squared_error']
+    met_grid = [
+        'r2',
+        'neg_mean_absolute_error',
+        'neg_mean_squared_error',
+        'neg_mean_absolute_percentage_error'
+    ]
     grid_search = GridSearchCV(
         pipe, param_grid, scoring=met_grid, refit='r2',
         cv=cv, n_jobs=-1, return_train_score=True
     )
     grid_search.fit(X_trainval, y_trainval)
 
-    # print("bests:")
-    # print(grid_search.best_params_)
-    # print(grid_search.best_score_)
-
     cv_results = pd.DataFrame(grid_search.__dict__['cv_results_'])
-    # display(cv_results)
-    # print(cv_results.columns)
     params = [i for i in cv_results.columns if "param_clf" in i]
-    # print(params)
     cv_results['model'] = cv_results.apply(lambda row: concatenate_strings(row, params), axis=1)
 
     cv_columns_to_show = [
-        'model', 'mean_train_r2', 'mean_test_r2',
+        'model',
+        'mean_train_r2',
+        'mean_test_r2',
         'mean_train_neg_mean_absolute_error',
         'mean_test_neg_mean_absolute_error',
         'mean_train_neg_mean_squared_error',
-        'mean_test_neg_mean_squared_error'
+        'mean_test_neg_mean_squared_error',
+        'mean_train_neg_mean_absolute_percentage_error',
+        'mean_test_neg_mean_absolute_percentage_error',
     ]
 
-    # display(
-    #     cv_results[['idn', 'params', 'mean_test_score', 'mean_train_score']].sort_values(by=["mean_test_score"],
-    #                                                                  ascending=False).reset_index(drop=True)
-    # )
     best_model_df = cv_results[(cv_results['params'] == grid_search.best_params_)][
             cv_columns_to_show].reset_index(drop=True)
 
@@ -90,14 +92,12 @@ def train_model(df, ax_shap_sum=None, ticker=None):
         'mean_test_neg_mean_squared_error': 'mean_test_mse',
         'mean_train_neg_mean_absolute_error': 'mean_train_mae',
         'mean_train_neg_mean_squared_error': 'mean_test_mse',
+        'mean_train_neg_mean_absolute_percentage_error': 'mean_train_mape',
+        'mean_test_neg_mean_absolute_percentage_error': 'mean_test_mape',
     }
     best_model_df = best_model_df.rename(columns=rename_dict)
-    best_model_df['mean_test_mae'] = best_model_df['mean_test_mae'].abs()
-    best_model_df['mean_test_mse'] = best_model_df['mean_test_mse'].abs()
-    best_model_df['mean_train_mae'] = best_model_df['mean_train_mae'].abs()
-    best_model_df['mean_test_mse'] = best_model_df['mean_test_mse'].abs()
-    best_model_df['mean_train_r2'] = best_model_df['mean_train_r2'].abs()
-    best_model_df['mean_test_r2'] = best_model_df['mean_test_r2'].abs()
+    for cols_ in best_model_df._get_numeric_data().columns:
+        best_model_df[cols_] = best_model_df[cols_].abs()
 
     new_columns = pd.MultiIndex.from_tuples([
         ('model', ''),
@@ -107,23 +107,28 @@ def train_model(df, ax_shap_sum=None, ticker=None):
         ('mae', 'test'),
         ('mse', 'train'),
         ('mse', 'test'),
+        ('mape', 'train'),
+        ('mape', 'test'),
     ])
     best_model_df.columns = new_columns
-    display(best_model_df.round(3))
+    # display(best_model_df.round(3))
+
+    bs_predict = X_test.apply(black_scholes_apply, axis=1)
+
+    # print("bsm performance:")
+    bsm = pd.DataFrame(
+        data=[[
+            'Black-Scholes-Merton',
+            r2_score(y_test, bs_predict),
+            mean_absolute_error(y_test, bs_predict),
+            mean_squared_error(y_test, bs_predict),
+            mean_absolute_percentage_error(y_test, bs_predict),
+          ]],
+        columns=['model', 'r2', 'mae', 'mse', 'mape'])
+    # display(bsm)
 
     best_estimator = grid_search.best_estimator_
     best_estimator.fit(X_trainval, y_trainval)
-
-    holdout_preds = best_estimator.predict(X_test)
-    # print("model performance:")
-    # print(r2_score(y_test, holdout_preds))
-    # print(mean_absolute_error(y_test, holdout_preds))
-    # print(mean_squared_error(y_test, holdout_preds))
-    # print(np.sqrt(mean_squared_error(y_test, holdout_preds)))
-
-    # display(
-    #     pd.DataFrame({'Predict': holdout_preds, 'Actual': y_test})
-    # )
 
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
@@ -131,9 +136,6 @@ def train_model(df, ax_shap_sum=None, ticker=None):
     ])
     pipeline.fit(X_trainval, y_trainval)
     holdout_preds = pipeline.predict(X_test)
-    # print(r2_score(y_test, holdout_preds))
-    # print(mean_absolute_error(y_test, holdout_preds))
-    # print(mean_squared_error(y_test, holdout_preds))
     bm = pipeline.named_steps['GradientBoostingClassifier']
     bm.fit(X_trainval, y_trainval)
 
@@ -145,12 +147,6 @@ def train_model(df, ax_shap_sum=None, ticker=None):
         check_additivity=False
     )
 
-    # print("shap summary plots")
-
-    # fig, axes = plt.subplots(2, 1, figsize=(30, 10), gridspec_kw={'hspace': 0.5, 'wspace': 0.5})
-    # axes_flat = axes.flatten()
-    # plt.sca(axes_flat[0])
-    # shap.summary_plot(shap_values, X_test, feature_names=X.columns, max_display=5, show=False)
     if ax_shap_sum != None:
         plt.sca(ax_shap_sum)
     shap.summary_plot(shap_values, plot_type='bar', feature_names=X.columns, max_display=5, show=False)
@@ -160,14 +156,7 @@ def train_model(df, ax_shap_sum=None, ticker=None):
         ax_shap_sum.tick_params(axis='x', labelsize=7)
     if ticker != None:
         ax_shap_sum.set_title(f"{ticker}", fontsize=7)
-    # plt.show()
 
-    shap_explanation = shap.Explanation(shap_values.values[:, :],
-                                        shap_values.base_values[0],
-                                        shap_values.data,
-                                        feature_names=X.columns)
-
-    # print("Top 5 features - shap values vs. feature values")
     feature_names = X.columns
     rf_resultX = pd.DataFrame(
         shap_values.values,
@@ -183,30 +172,8 @@ def train_model(df, ax_shap_sum=None, ticker=None):
         ascending=False,
         inplace=True
     )
-    # top_cols = shap_importance.head(5)['col_name'].to_list()
 
-
-    # for i in top_cols:
-    #     shap.plots.scatter(shap_explanation[:, i])
-
-
-    # # Histogram plot of features
-    # fig, axes = plt.subplots(3, 2, figsize=(18, 18), gridspec_kw={'hspace': 0.35})
-    # axes_flat = axes.flatten()
-    #
-    # # display(axes_flat)
-    # # display(top_cols)
-    #
-    # for ax, col in zip_longest(axes_flat, top_cols):
-    #     if col != None:
-    #         shap.plots.scatter(shap_explanation[:, col], ax=ax, show=False)
-    #     else:
-    #         ax.axis("off")
-    #
-    # fig.savefig('shap_scatter_plot.png')
-    # plt.show()
-
-    return X_test, y_test, shap_values, X, shap_explainer, bm, (best_model_df, r2_score(y_test, holdout_preds))
+    return X_test, y_test, shap_values, X, shap_explainer, bm, (best_model_df, bsm, r2_score(y_test, holdout_preds))
 
 
 def view_shap_value_for_instance(
@@ -258,7 +225,6 @@ def get_stock_price(symbol, date, price_dict, stock):
     if price_dict.get(symbol) == None:
         price_dict[symbol] = {}
 
-    # try:
     if price_dict[symbol].get(date) == None:
         history = stock.history(start=date)
         if not history.empty:
@@ -271,16 +237,12 @@ def get_stock_price(symbol, date, price_dict, stock):
             return round(price, 2)
     else:
         return round(price_dict[symbol][date], 2)
-    # except:
-    #     price = stock.history(period="1d")['Close'].values[0]
-    #     price_dict[symbol][date] = round(price, 2)
-    #     return round(price, 2)
 
 
 def combine_dfs(ticker_list, price_dict):
     ticker_df_list = []
     for ticker in ticker_list:
-        print(ticker)
+        # print(ticker)
         df = ticker_option(ticker, price_dict)
         if len(df) > 0:
             ticker_df_list.append(df)
@@ -322,6 +284,7 @@ def ticker_option(ticker, price_dict):
     df = pd.concat(option_df_list).reset_index(drop=True)
     df['lastTradeDate'] = df['lastTradeDate'].astype(str).str[:10]
     df['stockPrice'] = df.apply(lambda row: get_stock_price(ticker, row['lastTradeDate'], price_dict, stock), axis=1)
+    df['risk_free_rate'] = df.apply(lambda row: tnx_apply(row, price_dict), axis=1)
     df['option_ticker'] = ticker
     return df
 
@@ -349,6 +312,8 @@ def prepare_ml_dataset(df):
     df = df.drop(['contractSymbol',
                   'option_ticker',
                   'bid', 'ask',
+                  'percentChange',
+                  'inTheMoney',
                   # 'change',
                   'contractSize', 'currency', 'type', 'exp', 'lastTradeDate'], axis=1)
 
@@ -358,3 +323,61 @@ def prepare_ml_dataset(df):
     df = df[new_order]
     df = df[df['lastPrice'] > 10].reset_index(drop=True)
     return df
+
+
+class BlackScholesModel:
+    def __init__(self, S, K, T, r, sigma, type_):
+        self.S = S  # Underlying asset price
+        self.K = K  # Option strike price
+        self.T = T  # Time to expiration in years
+        self.r = r  # Risk-free interest rate
+        self.sigma = sigma  # Volatility of the underlying asset
+        self.type_ = type_
+
+    def d1(self):
+        return (np.log(self.S / self.K) + (self.r + 0.5 * self.sigma ** 2) * self.T) / (self.sigma * np.sqrt(self.T))
+
+    def d2(self):
+        return self.d1() - self.sigma * np.sqrt(self.T)
+
+    def call_option_price(self):
+        return (self.S * si.norm.cdf(self.d1(), 0.0, 1.0) - self.K * np.exp(-self.r * self.T) * si.norm.cdf(self.d2(),
+                                                                                                            0.0, 1.0))
+
+    def put_option_price(self):
+        return (self.K * np.exp(-self.r * self.T) * si.norm.cdf(-self.d2(), 0.0, 1.0) - self.S * si.norm.cdf(-self.d1(),
+                                                                                                             0.0, 1.0))
+    def price(self):
+        if self.type_ == "call":
+            return self.call_option_price()
+        else:
+            return self.put_option_price()
+
+
+def tnx_apply(value, price_dict):
+    if price_dict.get("^TNX") == None:
+        price_dict["^TNX"] = {}
+
+    date = value['lastTradeDate']  # Change this to your desired date
+    # print(date)
+    # print(price_dict["^TNX"].get(date))
+
+    if price_dict["^TNX"].get(date) == None:
+        # Fetch historical data for the specified date
+        tnx = yf.Ticker("^TNX")
+        val = round(tnx.history(start=date).iloc[0:1, :]['Close'].values[0], 2)
+        price_dict["^TNX"][date] = val
+        return val
+    else:
+        return round(price_dict["^TNX"][date], 2)
+
+
+def black_scholes_apply(value):
+    return BlackScholesModel(
+        S=value['stockPrice'],
+        K=value['strike'],
+        T=value['days_to_exp']/365,
+        r=value['risk_free_rate']/100,
+        sigma=value['impliedVolatility'],
+        type_='call' if value['type_call'] == 1 else 'put'
+    ).price()
