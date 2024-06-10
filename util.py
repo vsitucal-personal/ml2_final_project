@@ -22,7 +22,6 @@ from itertools import zip_longest
 
 warnings.filterwarnings("ignore")
 
-
 def train_model(df, ax_shap_sum=None, ticker=None):
     # train test split
     X, y = df.iloc[:, :-1], df.iloc[:, -1:].to_numpy().ravel()
@@ -33,6 +32,7 @@ def train_model(df, ax_shap_sum=None, ticker=None):
     # Gridsearch CV
     max_depth_range = [2, 3, 4]
     n_estimators_range = [200, 250]
+
     steps = [
         ('scaler', StandardScaler()),
         ('clf', None),
@@ -132,7 +132,8 @@ def train_model(df, ax_shap_sum=None, ticker=None):
 
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
-        ("GradientBoostingClassifier", GradientBoostingRegressor(max_depth=4, n_estimators=200))
+        ("GradientBoostingClassifier", best_estimator.named_steps['clf']),
+        # ("GradientBoostingClassifier", GradientBoostingRegressor(max_depth=4, n_estimators=200))
     ])
     pipeline.fit(X_trainval, y_trainval)
     holdout_preds = pipeline.predict(X_test)
@@ -154,7 +155,7 @@ def train_model(df, ax_shap_sum=None, ticker=None):
         ax_shap_sum.set_xlabel('mean shap value', fontsize=7)
         ax_shap_sum.tick_params(axis='y', labelsize=7)
         ax_shap_sum.tick_params(axis='x', labelsize=7)
-    if ticker != None:
+    if ticker != None and ax_shap_sum != None:
         ax_shap_sum.set_title(f"{ticker}", fontsize=7)
 
     feature_names = X.columns
@@ -173,46 +174,198 @@ def train_model(df, ax_shap_sum=None, ticker=None):
         inplace=True
     )
 
-    return X_test, y_test, shap_values, X, shap_explainer, bm, (best_model_df, bsm, r2_score(y_test, holdout_preds))
+    return X_test, y_test, shap_values, X, shap_explainer, bm, (best_model_df, bsm)
+
+
+def train_model_regularization(df, ax_shap_sum=None, ticker=None):
+    # train test split
+    X, y = df.iloc[:, :-1], df.iloc[:, -1:].to_numpy().ravel()
+    X_trainval, X_test, y_trainval, y_test = train_test_split(
+        X, y, random_state=1337, test_size=0.25
+    )
+
+    # Gridsearch CV
+    max_depth_range = [3, 4]
+    n_estimators_range = [100]
+    max_leaf_nodes_range =[10, 20]
+    min_samples_split_range=[4, 10]
+    min_samples_leaf_range= [3, 5]
+    steps = [
+        ('scaler', StandardScaler()),
+        ('clf', None),
+    ]
+    pipe = Pipeline(steps)
+    param_grid = [
+        {
+            'clf': [
+                GradientBoostingRegressor(max_features="sqrt"),
+            ],
+            'clf__max_depth': max_depth_range,
+            'clf__n_estimators': n_estimators_range,
+            'clf__max_leaf_nodes': max_leaf_nodes_range,
+            'clf__min_samples_split': min_samples_split_range,
+            'clf__min_samples_leaf': min_samples_leaf_range
+        }
+    ]
+    cv = 5
+    met_grid = [
+        'r2',
+        'neg_mean_absolute_error',
+        'neg_mean_squared_error',
+        'neg_mean_absolute_percentage_error'
+    ]
+    grid_search = GridSearchCV(
+        pipe, param_grid, scoring=met_grid, refit='r2',
+        cv=cv, n_jobs=-1, return_train_score=True
+    )
+    grid_search.fit(X_trainval, y_trainval)
+
+    cv_results = pd.DataFrame(grid_search.__dict__['cv_results_'])
+    params = [i for i in cv_results.columns if "param_clf" in i]
+    cv_results['model'] = cv_results.apply(lambda row: concatenate_strings(row, params), axis=1)
+
+    cv_columns_to_show = [
+        'model',
+        'mean_train_r2',
+        'mean_test_r2',
+        'mean_train_neg_mean_absolute_error',
+        'mean_test_neg_mean_absolute_error',
+        'mean_train_neg_mean_squared_error',
+        'mean_test_neg_mean_squared_error',
+        'mean_train_neg_mean_absolute_percentage_error',
+        'mean_test_neg_mean_absolute_percentage_error',
+    ]
+
+    best_model_df = cv_results[(cv_results['params'] == grid_search.best_params_)][
+            cv_columns_to_show].reset_index(drop=True)
+
+    rename_dict = {
+        'mean_test_neg_mean_absolute_error': 'mean_test_mae',
+        'mean_test_neg_mean_squared_error': 'mean_test_mse',
+        'mean_train_neg_mean_absolute_error': 'mean_train_mae',
+        'mean_train_neg_mean_squared_error': 'mean_test_mse',
+        'mean_train_neg_mean_absolute_percentage_error': 'mean_train_mape',
+        'mean_test_neg_mean_absolute_percentage_error': 'mean_test_mape',
+    }
+    best_model_df = best_model_df.rename(columns=rename_dict)
+    for cols_ in best_model_df._get_numeric_data().columns:
+        best_model_df[cols_] = best_model_df[cols_].abs()
+
+    new_columns = pd.MultiIndex.from_tuples([
+        ('model', ''),
+        ('r2', 'train'),
+        ('r2', 'test'),
+        ('mae', 'train'),
+        ('mae', 'test'),
+        ('mse', 'train'),
+        ('mse', 'test'),
+        ('mape', 'train'),
+        ('mape', 'test'),
+    ])
+    best_model_df.columns = new_columns
+    # display(best_model_df.round(3))
+
+    bs_predict = X_test.apply(black_scholes_apply, axis=1)
+
+    # print("bsm performance:")
+    bsm = pd.DataFrame(
+        data=[[
+            'Black-Scholes-Merton',
+            r2_score(y_test, bs_predict),
+            mean_absolute_error(y_test, bs_predict),
+            mean_squared_error(y_test, bs_predict),
+            mean_absolute_percentage_error(y_test, bs_predict),
+          ]],
+        columns=['model', 'r2', 'mae', 'mse', 'mape'])
+    # display(bsm)
+
+    best_estimator = grid_search.best_estimator_
+    best_estimator.fit(X_trainval, y_trainval)
+
+    pipeline = Pipeline([
+        ('scaler', StandardScaler()),
+        ("GradientBoostingClassifier", best_estimator.named_steps['clf']),
+        # ("GradientBoostingClassifier", GradientBoostingRegressor(max_depth=4, n_estimators=200))
+    ])
+    pipeline.fit(X_trainval, y_trainval)
+    holdout_preds = pipeline.predict(X_test)
+    bm = pipeline.named_steps['GradientBoostingClassifier']
+    bm.fit(X_trainval, y_trainval)
+
+    shap_explainer = shap.Explainer(
+        pipeline.named_steps['GradientBoostingClassifier'], X_trainval, feature_names=X.columns
+    )
+    shap_values = shap_explainer(
+        X_test,
+        check_additivity=False
+    )
+
+    if ax_shap_sum != None:
+        plt.sca(ax_shap_sum)
+        shap.summary_plot(shap_values, plot_type='bar', feature_names=X.columns, max_display=5, show=False)
+
+    if ax_shap_sum != None:
+        ax_shap_sum.set_xlabel('mean shap value', fontsize=7)
+        ax_shap_sum.tick_params(axis='y', labelsize=7)
+        ax_shap_sum.tick_params(axis='x', labelsize=7)
+    if ticker != None and ax_shap_sum != None:
+        ax_shap_sum.set_title(f"{ticker}", fontsize=7)
+
+    feature_names = X.columns
+    rf_resultX = pd.DataFrame(
+        shap_values.values,
+        columns=feature_names
+    )
+    vals = np.abs(rf_resultX.values).mean(0)
+    shap_importance = pd.DataFrame(
+        list(zip(feature_names, vals)),
+        columns=['col_name', 'feature_importance_vals']
+    )
+    shap_importance.sort_values(
+        by=['feature_importance_vals'],
+        ascending=False,
+        inplace=True
+    )
+
+    return X_test, y_test, shap_values, X, shap_explainer, bm, (best_model_df, bsm)
 
 
 def view_shap_value_for_instance(
     X_test, y_test, shap_values, X, shap_explainer, bm, instance_index, ax_shap_sum2, ticker
 ):
-    # Choose an instance to explain (e.g., the first instance in the test set)
-    # display(X_test.iloc[[instance_index]])
     shap_value_instance = shap_values[instance_index]
     instance_data = X_test.iloc[instance_index]
 
     # Create the SHAP waterfall plot for the chosen instance
-    plt.sca(ax_shap_sum2)
-    shap.waterfall_plot(shap.Explanation(values=shap_value_instance,
-                                         base_values=shap_explainer.expected_value,
-                                         data=instance_data,
-                                         feature_names=X.columns), max_display=6, show=False)
-    font_size = 7
-    ax_shap_sum2.tick_params(axis='y', labelsize=font_size)
-    ax_shap_sum2.tick_params(axis='x', labelsize=font_size)
-    ax_shap_sum2.set_title(f"{ticker}", fontsize=font_size)
-    ax_shap_sum2.tick_params(axis='y', which='major', pad=27.5)
+    if ax_shap_sum2 != None:
+        plt.sca(ax_shap_sum2)
+        shap.waterfall_plot(shap.Explanation(values=shap_value_instance,
+                                             base_values=shap_explainer.expected_value,
+                                             data=instance_data,
+                                             feature_names=X.columns), max_display=6, show=False)
+        font_size = 7
+        ax_shap_sum2.tick_params(axis='y', labelsize=font_size)
+        ax_shap_sum2.tick_params(axis='x', labelsize=font_size)
+        ax_shap_sum2.set_title(f"{ticker}", fontsize=font_size)
+        ax_shap_sum2.tick_params(axis='y', which='major', pad=27.5)
 
-    shared_axes = ax_shap_sum2.get_shared_y_axes()
-    for ax in shared_axes.get_siblings(ax_shap_sum2):
-        for annotation in ax_shap_sum2.texts:
-            # print(annotation)
-            annotation.set_fontsize(font_size)
+        shared_axes = ax_shap_sum2.get_shared_y_axes()
+        for ax in shared_axes.get_siblings(ax_shap_sum2):
+            for annotation in ax_shap_sum2.texts:
+                # print(annotation)
+                annotation.set_fontsize(font_size)
 
-        for item in ([ax.title, ax.xaxis.label, ax.yaxis.label] +
-                     ax.get_xticklabels() + ax.get_yticklabels()):
-            item.set_fontsize(font_size)
-            # item.set_color('black')
-            try:
-                if len(item) > 1:
-                    for more_items in item:
-                        more_items.set_fontsize(font_size)
-                        # more_items.set_color('black')
-            except:
-                pass
+            for item in ([ax.title, ax.xaxis.label, ax.yaxis.label] +
+                         ax.get_xticklabels() + ax.get_yticklabels()):
+                item.set_fontsize(font_size)
+                # item.set_color('black')
+                try:
+                    if len(item) > 1:
+                        for more_items in item:
+                            more_items.set_fontsize(font_size)
+                            # more_items.set_color('black')
+                except:
+                    pass
 
 
 def concatenate_strings(row, params_list):
@@ -317,11 +470,15 @@ def prepare_ml_dataset(df):
                   # 'change',
                   'contractSize', 'currency', 'type', 'exp', 'lastTradeDate'], axis=1)
 
+    # df["moneyness"] = df["strike"] / df["stockPrice"]
     end_col = ['lastPrice']
     start_col = []
     new_order = start_col + [item for item in df.columns if item not in end_col + start_col] + end_col
     df = df[new_order]
     df = df[df['lastPrice'] > 10].reset_index(drop=True)
+    df = df.drop(['type_put'], axis=1)
+    df = df.reset_index(drop=True)
+
     return df
 
 
@@ -355,6 +512,7 @@ class BlackScholesModel:
 
 
 def tnx_apply(value, price_dict):
+    rf_rate_ticker = "^TNX"
     if price_dict.get("^TNX") == None:
         price_dict["^TNX"] = {}
 
@@ -364,7 +522,7 @@ def tnx_apply(value, price_dict):
 
     if price_dict["^TNX"].get(date) == None:
         # Fetch historical data for the specified date
-        tnx = yf.Ticker("^TNX")
+        tnx = yf.Ticker(rf_rate_ticker)
         val = round(tnx.history(start=date).iloc[0:1, :]['Close'].values[0], 2)
         price_dict["^TNX"][date] = val
         return val
