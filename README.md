@@ -1,4 +1,4 @@
-# ml2_final_project
+# Machine Learning 2 Final Project
 
 ![](images/title.png)
 
